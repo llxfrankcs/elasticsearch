@@ -38,13 +38,12 @@ end::target-index-aliases[]
 
 tag::allow-no-indices[]
 `allow_no_indices`::
-(Optional, boolean) If `true`,
-the request does *not* return an error
-if a wildcard expression
-or `_all` value retrieves only missing or closed indices.
-+
-This parameter also applies to <<indices-aliases,index aliases>>
-that point to a missing or closed index.
+(Optional, boolean)
+If `false`, the request returns an error if any wildcard expression,
+<<indices-aliases,index alias>>, or `_all` value targets only missing or closed
+indices. This behavior applies even if the request targets other open indices.
+For example, a request targeting `foo*,bar*` returns an error if an index
+starts with `foo` but no index starts with `bar`.
 end::allow-no-indices[]
 
 tag::allow-no-match-transforms1[]
@@ -149,7 +148,11 @@ The destination for the {transform}.
 end::dest[]
 
 tag::dest-index[]
-The _destination index_ for the {transform}.
+The _destination index_ for the {transform}. The mappings of the destination 
+index are deduced based on the source fields when possible. If alternate 
+mappings are required, use the 
+https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-create-index.html[Create index API] 
+prior to starting the {transform}.
 end::dest-index[]
 
 tag::dest-pipeline[]
@@ -206,11 +209,12 @@ tag::expand-wildcards[]
 `expand_wildcards`::
 +
 --
-(Optional, string) Controls what kind of indices that wildcard
-expressions can expand to. Valid values are:
+(Optional, string) Controls what kind of indices that wildcard expressions can
+expand to. Multiple values are accepted when separated by a comma, as in
+`open,hidden`. Valid values are:
 
 `all`::
-Expand to open and closed indices.
+Expand to open and closed indices, including <<index-hidden,hidden indices>>.
 
 `open`::
 Expand only to open indices.
@@ -219,7 +223,8 @@ Expand only to open indices.
 Expand only to closed indices.
 
 `hidden`::
-Expansion of wildcards will include hidden indices.
+Expansion of wildcards will include <<index-hidden,hidden indices>>.
+Must be combined with `open`, `closed`, or both.
 
 `none`::
 Wildcard expressions are not accepted.
@@ -298,7 +303,7 @@ end::frequency[]
 
 tag::from[]
 `from`::
-(Optional, integer) Starting document offset. Defaults to `0`.
+(Optional, integer) Starting document offset. Needs to be non-negative and defaults to `0`.
 end::from[]
 
 tag::from-transforms[]
@@ -371,7 +376,7 @@ end::if_seq_no[]
 tag::ignore_throttled[]
 `ignore_throttled`::
 (Optional, boolean) If `true`, concrete, expanded or aliased indices are
-ignored when frozen.
+ignored when frozen. Defaults to `true`.
 end::ignore_throttled[]
 
 tag::index-ignore-unavailable[]
@@ -428,8 +433,8 @@ end::index-total[]
 tag::bulk-index[]
 `_index`::
 (Optional, string)
-The name of the target index.
-Required if not specified as a path parameter.
+Name of the data stream, index, or index alias to perform the action on. This
+parameter is required if a `<target>` is not specified in the request path.
 end::bulk-index[]
 
 tag::index-metric[]
@@ -507,9 +512,16 @@ end::index-metric[]
 tag::index-template[]
 `<index-template>`::
 (Required, string)
-Comma-separated list or wildcard expression of index template names
-used to limit the request.
+Comma-separated list of index template names used to limit the request. Wildcard
+(`*`) expressions are supported.
 end::index-template[]
+
+tag::component-template[]
+`<component-template>`::
+(Required, string)
+Comma-separated list or wildcard expression of component template names
+used to limit the request.
+end::component-template[]
 
 tag::lenient[]
 `lenient`::
@@ -548,7 +560,7 @@ tag::mappings[]
 specified, this mapping can include:
 
 * Field names
-* <<mapping-types,Field datatypes>>
+* <<mapping-types,Field data types>>
 * <<mapping-params,Mapping parameters>>
 
 See <<mapping>>.
@@ -567,6 +579,12 @@ such as `1264`.
 +
 A value of `-1` indicates {es} was unable to compute this number.
 end::memory[]
+
+tag::require-alias[]
+`require_alias`::
+(Optional, boolean) When true, this requires the destination to be an alias.
+Defaults to false.
+end::require-alias[]
 
 tag::node-filter[]
 `<node_filter>`::
@@ -636,29 +654,31 @@ The method for transforming the data. These objects define the pivot function
 end::pivot[]
 
 tag::pivot-aggs[]
-Defines how to aggregate the grouped data. The following composite aggregations
-are supported:
+Defines how to aggregate the grouped data. The following aggregations are
+supported:
 +
 --
 * <<search-aggregations-metrics-avg-aggregation,Average>>
-* <<search-aggregations-metrics-weight-avg-aggregation,Weighted average>>
+* <<search-aggregations-pipeline-bucket-script-aggregation,Bucket script>>
+* <<search-aggregations-pipeline-bucket-selector-aggregation,Bucket selector>>
 * <<search-aggregations-metrics-cardinality-aggregation,Cardinality>>
 * <<search-aggregations-bucket-filter-aggregation,Filter>>
-* <<search-aggregations-bucket-rare-terms-aggregation, Rare Terms>>
-* <<search-aggregations-bucket-terms-aggregation, Terms>>
 * <<search-aggregations-metrics-geobounds-aggregation,Geo bounds>>
 * <<search-aggregations-metrics-geocentroid-aggregation,Geo centroid>>
 * <<search-aggregations-metrics-max-aggregation,Max>>
 * <<search-aggregations-metrics-min-aggregation,Min>>
+* <<search-aggregations-bucket-missing-aggregation,Missing>>
 * <<search-aggregations-metrics-percentile-aggregation,Percentiles>>
+* <<search-aggregations-bucket-rare-terms-aggregation, Rare Terms>>
 * <<search-aggregations-metrics-scripted-metric-aggregation,Scripted metric>>
 * <<search-aggregations-metrics-sum-aggregation,Sum>>
+* <<search-aggregations-bucket-terms-aggregation, Terms>>
 * <<search-aggregations-metrics-valuecount-aggregation,Value count>>
-* <<search-aggregations-pipeline-bucket-script-aggregation,Bucket script>>
-* <<search-aggregations-pipeline-bucket-selector-aggregation,Bucket selector>>
+* <<search-aggregations-metrics-weight-avg-aggregation,Weighted average>>
+
 
 IMPORTANT: {transforms-cap} support a subset of the functionality in
-composite aggregations. See <<transform-limitations>>.
+aggregations. See <<transform-limitations>>.
 
 --
 end::pivot-aggs[]
@@ -668,9 +688,11 @@ Defines how to group the data. More than one grouping can be defined
   per pivot. The following groupings are supported:
 +
 --
-* <<_terms,Terms>>
-* <<_histogram,Histogram>>
 * <<_date_histogram,Date histogram>>
+* <<_geotile_grid,Geotile Grid>>
+* <<_histogram,Histogram>>
+* <<_terms,Terms>>
+
 --
 end::pivot-group-by[]
 
@@ -728,7 +750,7 @@ end::request_cache[]
 tag::requests_per_second[]
 `requests_per_second`::
 (Optional, integer) The throttle for this request in sub-requests per second.
--1 means no throttle. Defaults to 0.
+Defaults to `-1` (no throttle).
 end::requests_per_second[]
 
 tag::routing[]
@@ -758,7 +780,7 @@ end::scroll[]
 tag::scroll_size[]
 `scroll_size`::
 (Optional, integer) Size of the scroll request that powers the operation.
-Defaults to 100.
+Defaults to 1000.
 end::scroll_size[]
 
 tag::search-failures[]
@@ -843,14 +865,26 @@ end::source[]
 
 tag::source_excludes[]
 `_source_excludes`::
-(Optional, string) A list of fields to exclude from the returned `_source`
-field.
+(Optional, string)
+A comma-separated list of <<mapping-source-field,source fields>> to exclude from
+the response.
++
+You can also use this parameter to exclude fields from the subset specified in
+`_source_includes` query parameter.
++
+If the `_source` parameter is `false`, this parameter is ignored.
 end::source_excludes[]
 
 tag::source_includes[]
 `_source_includes`::
-(Optional, string) A list of fields to extract and return from the `_source`
-field.
+(Optional, string)
+A comma-separated list of <<mapping-source-field,source fields>> to
+include in the response.
++
+If this parameter is specified, only these source fields are returned. You can
+exclude fields from this subset using the `_source_excludes` query parameter.
++
+If the `_source` parameter is `false`, this parameter is ignored.
 end::source_includes[]
 
 tag::source-transforms[]
@@ -859,9 +893,9 @@ end::source-transforms[]
 
 tag::source-index-transforms[]
 The _source indices_ for the {transform}. It can be a single index, an index
-pattern (for example, `"myindex*"`), an array of indices (for example,
-`["index1", "index2"]`), or an array of index patterns (for example,
-`["myindex1-*", "myindex2-*"]`.
+pattern (for example, `"my-index-*"`), an array of indices (for example,
+`["my-index-000001", "my-index-000002"]`), or an array of index patterns (for example,
+`["my-index-*", "my-other-index-*"]`.
 end::source-index-transforms[]
 
 tag::source-query-transforms[]
@@ -925,7 +959,7 @@ end::transform-settings[]
 
 tag::transform-settings-docs-per-second[]
 Specifies a limit on the number of input documents per second. This setting
-throttles the {transform} by adding a wait time between search requests. The 
+throttles the {transform} by adding a wait time between search requests. The
 default value is `null`, which disables throttling.
 end::transform-settings-docs-per-second[]
 
@@ -943,7 +977,7 @@ tag::target-index[]
 (Required, string)
 Name of the target index to create.
 
-include::{docdir}/indices/create-index.asciidoc[tag=index-name-reqs]
+include::{es-repo-dir}/indices/create-index.asciidoc[tag=index-name-reqs]
 --
 end::target-index[]
 
@@ -1001,7 +1035,7 @@ information for all {transforms}.
 end::transform-id-wildcard[]
 
 tag::trigger-count[]
-The number of times the {transform} has been triggered by the scheduler. For 
+The number of times the {transform} has been triggered by the scheduler. For
 example, the scheduler triggers the {transform} indexer to check for updates
 or ingest new data at an interval specified in the
 <<put-transform-request-body,`frequency` property>>.

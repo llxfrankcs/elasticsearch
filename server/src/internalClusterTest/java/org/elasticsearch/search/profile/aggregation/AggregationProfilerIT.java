@@ -45,21 +45,39 @@ import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcke
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertSearchResponse;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.hasEntry;
 import static org.hamcrest.Matchers.notNullValue;
 
 @ESIntegTestCase.SuiteScopeTestCase
 public class AggregationProfilerIT extends ESIntegTestCase {
+    private static final String BUILD_LEAF_COLLECTOR = AggregationTimingType.BUILD_LEAF_COLLECTOR.toString();
     private static final String COLLECT = AggregationTimingType.COLLECT.toString();
+    private static final String POST_COLLECTION = AggregationTimingType.POST_COLLECTION.toString();
     private static final String INITIALIZE = AggregationTimingType.INITIALIZE.toString();
     private static final String BUILD_AGGREGATION = AggregationTimingType.BUILD_AGGREGATION.toString();
     private static final String REDUCE = AggregationTimingType.REDUCE.toString();
     private static final Set<String> BREAKDOWN_KEYS = Set.of(
-        COLLECT, INITIALIZE, BUILD_AGGREGATION, REDUCE,
-        COLLECT + "_count", INITIALIZE + "_count", BUILD_AGGREGATION + "_count", REDUCE + "_count");
+        INITIALIZE,
+        BUILD_LEAF_COLLECTOR,
+        COLLECT,
+        POST_COLLECTION,
+        BUILD_AGGREGATION,
+        REDUCE,
+        INITIALIZE + "_count",
+        BUILD_LEAF_COLLECTOR + "_count",
+        COLLECT + "_count",
+        POST_COLLECTION + "_count",
+        BUILD_AGGREGATION + "_count",
+        REDUCE + "_count"
+    );
 
     private static final String TOTAL_BUCKETS = "total_buckets";
-    private static final String WRAPPED = "wrapped_in_multi_bucket_aggregator";
-    private static final Object DEFERRED = "deferred_aggregators";
+    private static final String DEFERRED = "deferred_aggregators";
+    private static final String COLLECTION_STRAT = "collection_strategy";
+    private static final String RESULT_STRAT = "result_strategy";
+    private static final String HAS_FILTER = "has_filter";
+    private static final String SEGMENTS_WITH_SINGLE = "segments_with_single_valued_ords";
+    private static final String SEGMENTS_WITH_MULTI = "segments_with_multi_valued_ords";
 
     private static final String NUMBER_FIELD = "number";
     private static final String TAG_FIELD = "tag";
@@ -73,6 +91,7 @@ public class AggregationProfilerIT extends ESIntegTestCase {
     @Override
     protected void setupSuiteScopeCluster() throws Exception {
         assertAcked(client().admin().indices().prepareCreate("idx")
+                .setSettings(Map.of("number_of_shards", 1, "number_of_replicas", 0))
                 .setMapping(STRING_FIELD, "type=keyword", NUMBER_FIELD, "type=integer", TAG_FIELD, "type=keyword").get());
         List<IndexRequestBuilder> builders = new ArrayList<>();
 
@@ -90,7 +109,7 @@ public class AggregationProfilerIT extends ESIntegTestCase {
                         .endObject()));
         }
 
-        indexRandom(true, builders);
+        indexRandom(true, false, builders);
         createIndex("idx_unmapped");
     }
 
@@ -184,7 +203,7 @@ public class AggregationProfilerIT extends ESIntegTestCase {
             assertThat(termsBreakdown.get(COLLECT), greaterThan(0L));
             assertThat(termsBreakdown.get(BUILD_AGGREGATION), greaterThan(0L));
             assertThat(termsBreakdown.get(REDUCE), equalTo(0L));
-            assertThat(termsAggResult.getDebugInfo(), equalTo(Map.of(WRAPPED, true)));
+            assertRemapTermsDebugInfo(termsAggResult);
             assertThat(termsAggResult.getProfiledChildren().size(), equalTo(1));
 
             ProfileResult avgAggResult = termsAggResult.getProfiledChildren().get(0);
@@ -202,6 +221,18 @@ public class AggregationProfilerIT extends ESIntegTestCase {
             assertThat(avgAggResult.getDebugInfo(), equalTo(Map.of()));
             assertThat(avgAggResult.getProfiledChildren().size(), equalTo(0));
         }
+    }
+
+    private void assertRemapTermsDebugInfo(ProfileResult termsAggResult) {
+        assertThat(termsAggResult.getDebugInfo(), hasEntry(COLLECTION_STRAT, "remap"));
+        assertThat(termsAggResult.getDebugInfo(), hasEntry(RESULT_STRAT, "terms"));
+        assertThat(termsAggResult.getDebugInfo(), hasEntry(HAS_FILTER, false));
+        // TODO we only index single valued docs but the ordinals ends up with multi valued sometimes
+        assertThat(
+            termsAggResult.getDebugInfo().toString(),
+            (int) termsAggResult.getDebugInfo().get(SEGMENTS_WITH_SINGLE) + (int) termsAggResult.getDebugInfo().get(SEGMENTS_WITH_MULTI),
+            greaterThan(0)
+        );
     }
 
     public void testMultiLevelProfileBreadthFirst() {
@@ -251,7 +282,7 @@ public class AggregationProfilerIT extends ESIntegTestCase {
             assertThat(termsBreakdown.get(COLLECT), greaterThan(0L));
             assertThat(termsBreakdown.get(BUILD_AGGREGATION), greaterThan(0L));
             assertThat(termsBreakdown.get(REDUCE), equalTo(0L));
-            assertThat(termsAggResult.getDebugInfo(), equalTo(Map.of(WRAPPED, true)));
+            assertRemapTermsDebugInfo(termsAggResult);
             assertThat(termsAggResult.getProfiledChildren().size(), equalTo(1));
 
             ProfileResult avgAggResult = termsAggResult.getProfiledChildren().get(0);
@@ -297,7 +328,9 @@ public class AggregationProfilerIT extends ESIntegTestCase {
             assertThat(diversifyBreakdown, notNullValue());
             assertThat(diversifyBreakdown.keySet(), equalTo(BREAKDOWN_KEYS));
             assertThat(diversifyBreakdown.get(INITIALIZE), greaterThan(0L));
+            assertThat(diversifyBreakdown.get(BUILD_LEAF_COLLECTOR), greaterThan(0L));
             assertThat(diversifyBreakdown.get(COLLECT), greaterThan(0L));
+            assertThat(diversifyBreakdown.get(POST_COLLECTION), greaterThan(0L));
             assertThat(diversifyBreakdown.get(BUILD_AGGREGATION), greaterThan(0L));
             assertThat(diversifyBreakdown.get(REDUCE), equalTo(0L));
             assertThat(diversifyAggResult.getDebugInfo(), equalTo(Map.of(DEFERRED, List.of("max"))));
@@ -311,8 +344,10 @@ public class AggregationProfilerIT extends ESIntegTestCase {
             Map<String, Long> maxBreakdown = maxAggResult.getTimeBreakdown();
             assertThat(maxBreakdown, notNullValue());
             assertThat(maxBreakdown.keySet(), equalTo(BREAKDOWN_KEYS));
-            assertThat(maxBreakdown.get(INITIALIZE), greaterThan(0L));
-            assertThat(maxBreakdown.get(COLLECT), greaterThan(0L));
+            assertThat(diversifyBreakdown.get(INITIALIZE), greaterThan(0L));
+            assertThat(diversifyBreakdown.get(BUILD_LEAF_COLLECTOR), greaterThan(0L));
+            assertThat(diversifyBreakdown.get(COLLECT), greaterThan(0L));
+            assertThat(diversifyBreakdown.get(POST_COLLECTION), greaterThan(0L));
             assertThat(maxBreakdown.get(BUILD_AGGREGATION), greaterThan(0L));
             assertThat(maxBreakdown.get(REDUCE), equalTo(0L));
             assertThat(maxAggResult.getDebugInfo(), equalTo(Map.of()));
@@ -354,7 +389,9 @@ public class AggregationProfilerIT extends ESIntegTestCase {
             assertThat(histoBreakdown, notNullValue());
             assertThat(histoBreakdown.keySet(), equalTo(BREAKDOWN_KEYS));
             assertThat(histoBreakdown.get(INITIALIZE), greaterThan(0L));
+            assertThat(histoBreakdown.get(BUILD_LEAF_COLLECTOR), greaterThan(0L));
             assertThat(histoBreakdown.get(COLLECT), greaterThan(0L));
+            assertThat(histoBreakdown.get(POST_COLLECTION), greaterThan(0L));
             assertThat(histoBreakdown.get(BUILD_AGGREGATION), greaterThan(0L));
             assertThat(histoBreakdown.get(REDUCE), equalTo(0L));
             Map<String, Object> histoDebugInfo = histoAggResult.getDebugInfo();
@@ -374,10 +411,12 @@ public class AggregationProfilerIT extends ESIntegTestCase {
             assertThat(tagsBreakdown, notNullValue());
             assertThat(tagsBreakdown.keySet(), equalTo(BREAKDOWN_KEYS));
             assertThat(tagsBreakdown.get(INITIALIZE), greaterThan(0L));
+            assertThat(tagsBreakdown.get(BUILD_LEAF_COLLECTOR), greaterThan(0L));
             assertThat(tagsBreakdown.get(COLLECT), greaterThan(0L));
+            assertThat(tagsBreakdown.get(POST_COLLECTION), greaterThan(0L));
             assertThat(tagsBreakdown.get(BUILD_AGGREGATION), greaterThan(0L));
             assertThat(tagsBreakdown.get(REDUCE), equalTo(0L));
-            assertThat(tagsAggResult.getDebugInfo(), equalTo(Map.of(WRAPPED, true)));
+            assertRemapTermsDebugInfo(tagsAggResult);
             assertThat(tagsAggResult.getProfiledChildren().size(), equalTo(2));
 
             Map<String, ProfileResult> tagsAggResultSubAggregations = tagsAggResult.getProfiledChildren().stream()
@@ -391,7 +430,9 @@ public class AggregationProfilerIT extends ESIntegTestCase {
             assertThat(avgBreakdown, notNullValue());
             assertThat(avgBreakdown.keySet(), equalTo(BREAKDOWN_KEYS));
             assertThat(avgBreakdown.get(INITIALIZE), greaterThan(0L));
+            assertThat(avgBreakdown.get(BUILD_LEAF_COLLECTOR), greaterThan(0L));
             assertThat(avgBreakdown.get(COLLECT), greaterThan(0L));
+            assertThat(avgBreakdown.get(POST_COLLECTION), greaterThan(0L));
             assertThat(avgBreakdown.get(BUILD_AGGREGATION), greaterThan(0L));
             assertThat(avgBreakdown.get(REDUCE), equalTo(0L));
             assertThat(avgAggResult.getDebugInfo(), equalTo(Map.of()));
@@ -405,7 +446,9 @@ public class AggregationProfilerIT extends ESIntegTestCase {
             assertThat(maxBreakdown, notNullValue());
             assertThat(maxBreakdown.keySet(), equalTo(BREAKDOWN_KEYS));
             assertThat(maxBreakdown.get(INITIALIZE), greaterThan(0L));
+            assertThat(maxBreakdown.get(BUILD_LEAF_COLLECTOR), greaterThan(0L));
             assertThat(maxBreakdown.get(COLLECT), greaterThan(0L));
+            assertThat(maxBreakdown.get(POST_COLLECTION), greaterThan(0L));
             assertThat(maxBreakdown.get(BUILD_AGGREGATION), greaterThan(0L));
             assertThat(maxBreakdown.get(REDUCE), equalTo(0L));
             assertThat(maxAggResult.getDebugInfo(), equalTo(Map.of()));
@@ -419,10 +462,12 @@ public class AggregationProfilerIT extends ESIntegTestCase {
             assertThat(stringsBreakdown, notNullValue());
             assertThat(stringsBreakdown.keySet(), equalTo(BREAKDOWN_KEYS));
             assertThat(stringsBreakdown.get(INITIALIZE), greaterThan(0L));
+            assertThat(stringsBreakdown.get(BUILD_LEAF_COLLECTOR), greaterThan(0L));
             assertThat(stringsBreakdown.get(COLLECT), greaterThan(0L));
+            assertThat(stringsBreakdown.get(POST_COLLECTION), greaterThan(0L));
             assertThat(stringsBreakdown.get(BUILD_AGGREGATION), greaterThan(0L));
             assertThat(stringsBreakdown.get(REDUCE), equalTo(0L));
-            assertThat(stringsAggResult.getDebugInfo(), equalTo(Map.of(WRAPPED, true)));
+            assertRemapTermsDebugInfo(stringsAggResult);
             assertThat(stringsAggResult.getProfiledChildren().size(), equalTo(3));
 
             Map<String, ProfileResult> stringsAggResultSubAggregations = stringsAggResult.getProfiledChildren().stream()
@@ -436,7 +481,9 @@ public class AggregationProfilerIT extends ESIntegTestCase {
             assertThat(avgBreakdown, notNullValue());
             assertThat(avgBreakdown.keySet(), equalTo(BREAKDOWN_KEYS));
             assertThat(avgBreakdown.get(INITIALIZE), greaterThan(0L));
+            assertThat(avgBreakdown.get(BUILD_LEAF_COLLECTOR), greaterThan(0L));
             assertThat(avgBreakdown.get(COLLECT), greaterThan(0L));
+            assertThat(avgBreakdown.get(POST_COLLECTION), greaterThan(0L));
             assertThat(avgBreakdown.get(BUILD_AGGREGATION), greaterThan(0L));
             assertThat(avgBreakdown.get(REDUCE), equalTo(0L));
             assertThat(avgAggResult.getDebugInfo(), equalTo(Map.of()));
@@ -450,7 +497,9 @@ public class AggregationProfilerIT extends ESIntegTestCase {
             assertThat(maxBreakdown, notNullValue());
             assertThat(maxBreakdown.keySet(), equalTo(BREAKDOWN_KEYS));
             assertThat(maxBreakdown.get(INITIALIZE), greaterThan(0L));
+            assertThat(maxBreakdown.get(BUILD_LEAF_COLLECTOR), greaterThan(0L));
             assertThat(maxBreakdown.get(COLLECT), greaterThan(0L));
+            assertThat(maxBreakdown.get(POST_COLLECTION), greaterThan(0L));
             assertThat(maxBreakdown.get(BUILD_AGGREGATION), greaterThan(0L));
             assertThat(maxBreakdown.get(REDUCE), equalTo(0L));
             assertThat(maxAggResult.getDebugInfo(), equalTo(Map.of()));
@@ -465,10 +514,12 @@ public class AggregationProfilerIT extends ESIntegTestCase {
             assertThat(tagsBreakdown, notNullValue());
             assertThat(tagsBreakdown.keySet(), equalTo(BREAKDOWN_KEYS));
             assertThat(tagsBreakdown.get(INITIALIZE), greaterThan(0L));
+            assertThat(tagsBreakdown.get(BUILD_LEAF_COLLECTOR), greaterThan(0L));
             assertThat(tagsBreakdown.get(COLLECT), greaterThan(0L));
+            assertThat(tagsBreakdown.get(POST_COLLECTION), greaterThan(0L));
             assertThat(tagsBreakdown.get(BUILD_AGGREGATION), greaterThan(0L));
             assertThat(tagsBreakdown.get(REDUCE), equalTo(0L));
-            assertThat(tagsAggResult.getDebugInfo(), equalTo(Map.of(WRAPPED, true)));
+            assertRemapTermsDebugInfo(tagsAggResult);
             assertThat(tagsAggResult.getProfiledChildren().size(), equalTo(2));
 
             tagsAggResultSubAggregations = tagsAggResult.getProfiledChildren().stream()
@@ -482,7 +533,9 @@ public class AggregationProfilerIT extends ESIntegTestCase {
             assertThat(avgBreakdown, notNullValue());
             assertThat(avgBreakdown.keySet(), equalTo(BREAKDOWN_KEYS));
             assertThat(avgBreakdown.get(INITIALIZE), greaterThan(0L));
+            assertThat(avgBreakdown.get(BUILD_LEAF_COLLECTOR), greaterThan(0L));
             assertThat(avgBreakdown.get(COLLECT), greaterThan(0L));
+            assertThat(avgBreakdown.get(POST_COLLECTION), greaterThan(0L));
             assertThat(avgBreakdown.get(BUILD_AGGREGATION), greaterThan(0L));
             assertThat(avgBreakdown.get(REDUCE), equalTo(0L));
             assertThat(avgAggResult.getDebugInfo(), equalTo(Map.of()));
@@ -496,7 +549,9 @@ public class AggregationProfilerIT extends ESIntegTestCase {
             assertThat(maxBreakdown, notNullValue());
             assertThat(maxBreakdown.keySet(), equalTo(BREAKDOWN_KEYS));
             assertThat(maxBreakdown.get(INITIALIZE), greaterThan(0L));
+            assertThat(maxBreakdown.get(BUILD_LEAF_COLLECTOR), greaterThan(0L));
             assertThat(maxBreakdown.get(COLLECT), greaterThan(0L));
+            assertThat(maxBreakdown.get(POST_COLLECTION), greaterThan(0L));
             assertThat(maxBreakdown.get(BUILD_AGGREGATION), greaterThan(0L));
             assertThat(maxBreakdown.get(REDUCE), equalTo(0L));
             assertThat(maxAggResult.getDebugInfo(), equalTo(Map.of()));

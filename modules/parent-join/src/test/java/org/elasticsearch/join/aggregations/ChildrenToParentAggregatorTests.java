@@ -48,6 +48,7 @@ import org.elasticsearch.index.mapper.Uid;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.join.ParentJoinPlugin;
 import org.elasticsearch.join.mapper.MetaJoinFieldMapper;
+import org.elasticsearch.join.mapper.ParentIdFieldMapper;
 import org.elasticsearch.join.mapper.ParentJoinFieldMapper;
 import org.elasticsearch.plugins.SearchPlugin;
 import org.elasticsearch.search.aggregations.Aggregation;
@@ -57,7 +58,6 @@ import org.elasticsearch.search.aggregations.bucket.terms.LongTerms;
 import org.elasticsearch.search.aggregations.bucket.terms.TermsAggregationBuilder;
 import org.elasticsearch.search.aggregations.metrics.InternalMin;
 import org.elasticsearch.search.aggregations.metrics.MinAggregationBuilder;
-import org.elasticsearch.search.aggregations.support.ValueType;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -118,9 +118,11 @@ public class ChildrenToParentAggregatorTests extends AggregatorTestCase {
                 expectedTotalParents++;
                 expectedMinValue = Math.min(expectedMinValue, expectedValues.v2());
             }
-            assertEquals("Having " + parent.getDocCount() + " docs and aggregation results: " +
-                    parent.getAggregations().asMap(),
-                expectedTotalParents, parent.getDocCount());
+            assertEquals(
+                "Having " + parent.getDocCount() + " docs and aggregation results: " + parent,
+                expectedTotalParents,
+                parent.getDocCount()
+            );
             assertEquals(expectedMinValue, ((InternalMin) parent.getAggregations().get("in_parent")).getValue(), Double.MIN_VALUE);
             assertTrue(JoinAggregationInspectionHelper.hasValue(parent));
         });
@@ -232,21 +234,19 @@ public class ChildrenToParentAggregatorTests extends AggregatorTestCase {
         Map<String, Tuple<Integer, Integer>> expectedValues = new HashMap<>();
         int numParents = randomIntBetween(1, 10);
         for (int i = 0; i < numParents; i++) {
+            List<List<Field>> documents = new ArrayList<>();
             String parent = "parent" + i;
             int randomValue = randomIntBetween(0, 100);
-            List<Field> parentDocument = createParentDocument(parent, randomValue);
-            /*long parentDocId =*/ iw.addDocument(parentDocument);
-            //System.out.println("Parent: " + parent + ": " + randomValue + ", id: " + parentDocId);
+            documents.add(createParentDocument(parent, randomValue));
             int numChildren = randomIntBetween(1, 10);
             int minValue = Integer.MAX_VALUE;
             for (int c = 0; c < numChildren; c++) {
                 minValue = Math.min(minValue, randomValue);
                 int randomSubValue = randomIntBetween(0, 100);
-                List<Field> childDocument = createChildDocument("child" + c + "_" + parent, parent, randomSubValue);
-                /*long childDocId =*/ iw.addDocument(childDocument);
-                //System.out.println("Child: " + "child" + c + "_" + parent + ": " + randomSubValue + ", id: " + childDocId);
+                documents.add(createChildDocument("child" + c + "_" + parent, parent, randomSubValue));
             }
             expectedValues.put(parent, new Tuple<>(numChildren, minValue));
+            iw.addDocuments(documents);
         }
         return expectedValues;
     }
@@ -278,15 +278,18 @@ public class ChildrenToParentAggregatorTests extends AggregatorTestCase {
         ParentJoinFieldMapper joinFieldMapper = createJoinFieldMapper();
         MapperService mapperService = mock(MapperService.class);
         MetaJoinFieldMapper.MetaJoinFieldType metaJoinFieldType = mock(MetaJoinFieldMapper.MetaJoinFieldType.class);
-        when(metaJoinFieldType.getMapper()).thenReturn(joinFieldMapper);
+        when(metaJoinFieldType.getJoinField()).thenReturn("join_field");
         when(mapperService.fieldType("_parent_join")).thenReturn(metaJoinFieldType);
+        when(mapperService.fieldType("join_field")).thenReturn(joinFieldMapper.fieldType());
+        when(mapperService.fieldType("join_field#" + PARENT_TYPE))
+            .thenReturn(new ParentIdFieldMapper.ParentIdFieldType("join_field#" + PARENT_TYPE, false));
         return mapperService;
     }
 
     private static ParentJoinFieldMapper createJoinFieldMapper() {
         Settings settings = Settings.builder().put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT).build();
         return new ParentJoinFieldMapper.Builder("join_field")
-                .addParent(PARENT_TYPE, Collections.singleton(CHILD_TYPE))
+                .addRelation(PARENT_TYPE, Collections.singleton(CHILD_TYPE))
                 .build(new Mapper.BuilderContext(settings, new ContentPath(0)));
     }
 
@@ -296,9 +299,8 @@ public class ChildrenToParentAggregatorTests extends AggregatorTestCase {
         ParentAggregationBuilder aggregationBuilder = new ParentAggregationBuilder("_name", CHILD_TYPE);
         aggregationBuilder.subAggregation(new MinAggregationBuilder("in_parent").field("number"));
 
-        MappedFieldType fieldType = new NumberFieldMapper.NumberFieldType(NumberFieldMapper.NumberType.LONG);
-        fieldType.setName("number");
-        InternalParent result = search(indexSearcher, query, aggregationBuilder, fieldType);
+        MappedFieldType fieldType = new NumberFieldMapper.NumberFieldType("number", NumberFieldMapper.NumberType.LONG);
+        InternalParent result = searchAndReduce(indexSearcher, query, aggregationBuilder, fieldType);
         verify.accept(result);
     }
 
@@ -306,12 +308,10 @@ public class ChildrenToParentAggregatorTests extends AggregatorTestCase {
             throws IOException {
 
         ParentAggregationBuilder aggregationBuilder = new ParentAggregationBuilder("_name", CHILD_TYPE);
-        aggregationBuilder.subAggregation(new TermsAggregationBuilder("value_terms").userValueTypeHint(ValueType.LONG)
-            .field("number"));
+        aggregationBuilder.subAggregation(new TermsAggregationBuilder("value_terms").field("number"));
 
-        MappedFieldType fieldType = new NumberFieldMapper.NumberFieldType(NumberFieldMapper.NumberType.LONG);
-        fieldType.setName("number");
-        InternalParent result = search(indexSearcher, query, aggregationBuilder, fieldType);
+        MappedFieldType fieldType = new NumberFieldMapper.NumberFieldType("number", NumberFieldMapper.NumberType.LONG);
+        InternalParent result = searchAndReduce(indexSearcher, query, aggregationBuilder, fieldType);
         verify.accept(result);
     }
 
@@ -319,15 +319,13 @@ public class ChildrenToParentAggregatorTests extends AggregatorTestCase {
     private void testCaseTermsParentTerms(Query query, IndexSearcher indexSearcher, Consumer<LongTerms> verify)
             throws IOException {
         AggregationBuilder aggregationBuilder =
-            new TermsAggregationBuilder("subvalue_terms").userValueTypeHint(ValueType.LONG).field("subNumber").
+            new TermsAggregationBuilder("subvalue_terms").field("subNumber").
                 subAggregation(new ParentAggregationBuilder("to_parent", CHILD_TYPE).
-                    subAggregation(new TermsAggregationBuilder("value_terms").userValueTypeHint(ValueType.LONG).field("number")));
+                    subAggregation(new TermsAggregationBuilder("value_terms").field("number")));
 
-        MappedFieldType fieldType = new NumberFieldMapper.NumberFieldType(NumberFieldMapper.NumberType.LONG);
-        fieldType.setName("number");
-        MappedFieldType subFieldType = new NumberFieldMapper.NumberFieldType(NumberFieldMapper.NumberType.LONG);
-        subFieldType.setName("subNumber");
-        LongTerms result = search(indexSearcher, query, aggregationBuilder, fieldType, subFieldType);
+        MappedFieldType fieldType = new NumberFieldMapper.NumberFieldType("number", NumberFieldMapper.NumberType.LONG);
+        MappedFieldType subFieldType = new NumberFieldMapper.NumberFieldType("subNumber", NumberFieldMapper.NumberType.LONG);
+        LongTerms result = searchAndReduce(indexSearcher, query, aggregationBuilder, fieldType, subFieldType);
         verify.accept(result);
     }
 

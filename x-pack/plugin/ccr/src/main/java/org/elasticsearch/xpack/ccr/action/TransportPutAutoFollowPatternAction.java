@@ -10,7 +10,7 @@ import org.elasticsearch.action.admin.cluster.state.ClusterStateRequest;
 import org.elasticsearch.action.admin.cluster.state.ClusterStateResponse;
 import org.elasticsearch.action.support.ActionFilters;
 import org.elasticsearch.action.support.master.AcknowledgedResponse;
-import org.elasticsearch.action.support.master.TransportMasterNodeAction;
+import org.elasticsearch.action.support.master.AcknowledgedTransportMasterNodeAction;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.cluster.AckedClusterStateUpdateTask;
 import org.elasticsearch.cluster.ClusterState;
@@ -21,7 +21,7 @@ import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.cluster.metadata.Metadata;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.inject.Inject;
-import org.elasticsearch.common.io.stream.StreamInput;
+import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.license.LicenseUtils;
 import org.elasticsearch.tasks.Task;
 import org.elasticsearch.threadpool.ThreadPool;
@@ -31,17 +31,16 @@ import org.elasticsearch.xpack.core.ccr.AutoFollowMetadata;
 import org.elasticsearch.xpack.core.ccr.AutoFollowMetadata.AutoFollowPattern;
 import org.elasticsearch.xpack.core.ccr.action.PutAutoFollowPatternAction;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
-public class TransportPutAutoFollowPatternAction extends
-    TransportMasterNodeAction<PutAutoFollowPatternAction.Request, AcknowledgedResponse> {
+public class TransportPutAutoFollowPatternAction extends AcknowledgedTransportMasterNodeAction<PutAutoFollowPatternAction.Request> {
 
     private final Client client;
     private final CcrLicenseChecker ccrLicenseChecker;
@@ -56,19 +55,9 @@ public class TransportPutAutoFollowPatternAction extends
             final IndexNameExpressionResolver indexNameExpressionResolver,
             final CcrLicenseChecker ccrLicenseChecker) {
         super(PutAutoFollowPatternAction.NAME, transportService, clusterService, threadPool, actionFilters,
-            PutAutoFollowPatternAction.Request::new, indexNameExpressionResolver);
+            PutAutoFollowPatternAction.Request::new, indexNameExpressionResolver, ThreadPool.Names.SAME);
         this.client = client;
         this.ccrLicenseChecker = Objects.requireNonNull(ccrLicenseChecker, "ccrLicenseChecker");
-    }
-
-    @Override
-    protected String executor() {
-        return ThreadPool.Names.SAME;
-    }
-
-    @Override
-    protected AcknowledgedResponse read(StreamInput in) throws IOException {
-        return new AcknowledgedResponse(in);
     }
 
     @Override
@@ -77,6 +66,17 @@ public class TransportPutAutoFollowPatternAction extends
                                    ActionListener<AcknowledgedResponse> listener) throws Exception {
         if (ccrLicenseChecker.isCcrAllowed() == false) {
             listener.onFailure(LicenseUtils.newComplianceException("ccr"));
+            return;
+        }
+
+        final Settings replicatedRequestSettings = TransportResumeFollowAction.filter(request.getSettings());
+        if (replicatedRequestSettings.isEmpty() == false) {
+            final String message = String.format(
+                Locale.ROOT,
+                "can not put auto-follow pattern that could override leader settings %s",
+                replicatedRequestSettings
+            );
+            listener.onFailure(new IllegalArgumentException(message));
             return;
         }
         final Client remoteClient = client.getRemoteClusterClient(request.getRemoteCluster());
@@ -93,7 +93,7 @@ public class TransportPutAutoFollowPatternAction extends
 
                             @Override
                             protected AcknowledgedResponse newResponse(boolean acknowledged) {
-                                return new AcknowledgedResponse(acknowledged);
+                                return AcknowledgedResponse.of(acknowledged);
                             }
 
                             @Override
@@ -161,6 +161,7 @@ public class TransportPutAutoFollowPatternAction extends
             request.getRemoteCluster(),
             request.getLeaderIndexPatterns(),
             request.getFollowIndexNamePattern(),
+            request.getSettings(),
             true,
             request.getParameters().getMaxReadRequestOperationCount(),
             request.getParameters().getMaxWriteRequestOperationCount(),

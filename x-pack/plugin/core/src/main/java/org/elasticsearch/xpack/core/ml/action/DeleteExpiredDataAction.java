@@ -5,13 +5,10 @@
  */
 package org.elasticsearch.xpack.core.ml.action;
 
-import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionRequest;
-import org.elasticsearch.action.ActionRequestBuilder;
 import org.elasticsearch.action.ActionRequestValidationException;
 import org.elasticsearch.action.ActionResponse;
 import org.elasticsearch.action.ActionType;
-import org.elasticsearch.client.ElasticsearchClient;
 import org.elasticsearch.common.ParseField;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
@@ -19,6 +16,8 @@ import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.xcontent.ObjectParser;
 import org.elasticsearch.common.xcontent.ToXContentObject;
 import org.elasticsearch.common.xcontent.XContentBuilder;
+import org.elasticsearch.common.xcontent.XContentParser;
+import org.elasticsearch.xpack.core.ml.job.config.Job;
 
 import java.io.IOException;
 import java.util.Objects;
@@ -46,10 +45,21 @@ public class DeleteExpiredDataAction extends ActionType<DeleteExpiredDataAction.
             PARSER.declareFloat(Request::setRequestsPerSecond, REQUESTS_PER_SECOND);
             PARSER.declareString((obj, value) -> obj.setTimeout(TimeValue.parseTimeValue(value, TIMEOUT.getPreferredName())),
                 TIMEOUT);
+            PARSER.declareString(Request::setJobId, Job.ID);
+        }
+
+        public static Request parseRequest(String jobId, XContentParser parser) {
+            Request request = PARSER.apply(parser, null);
+            if (jobId != null) {
+                request.jobId = jobId;
+            }
+            return request;
         }
 
         private Float requestsPerSecond;
         private TimeValue timeout;
+        private String jobId;
+        private String [] expandedJobIds;
 
         public Request() {}
 
@@ -60,13 +70,9 @@ public class DeleteExpiredDataAction extends ActionType<DeleteExpiredDataAction.
 
         public Request(StreamInput in) throws IOException {
             super(in);
-            if (in.getVersion().onOrAfter(Version.V_7_8_0)) {
-                this.requestsPerSecond = in.readOptionalFloat();
-                this.timeout = in.readOptionalTimeValue();
-            } else {
-                this.requestsPerSecond = null;
-                this.timeout = null;
-            }
+            this.requestsPerSecond = in.readOptionalFloat();
+            this.timeout = in.readOptionalTimeValue();
+            this.jobId = in.readOptionalString();
         }
 
         public Float getRequestsPerSecond() {
@@ -77,6 +83,10 @@ public class DeleteExpiredDataAction extends ActionType<DeleteExpiredDataAction.
             return timeout;
         }
 
+        public String getJobId() {
+            return jobId;
+        }
+
         public Request setRequestsPerSecond(Float requestsPerSecond) {
             this.requestsPerSecond = requestsPerSecond;
             return this;
@@ -85,6 +95,25 @@ public class DeleteExpiredDataAction extends ActionType<DeleteExpiredDataAction.
         public Request setTimeout(TimeValue timeout) {
             this.timeout = timeout;
             return this;
+        }
+
+        public Request setJobId(String jobId) {
+            this.jobId = jobId;
+            return this;
+        }
+
+        /**
+         * Not serialized, the expanded job Ids should only be used
+         * on the executing node.
+         * @return The expanded Ids in the case where {@code jobId} is not `_all`
+         * otherwise null.
+         */
+        public String [] getExpandedJobIds() {
+            return expandedJobIds;
+        }
+
+        public void setExpandedJobIds(String [] expandedJobIds) {
+            this.expandedJobIds = expandedJobIds;
         }
 
         @Override
@@ -103,27 +132,23 @@ public class DeleteExpiredDataAction extends ActionType<DeleteExpiredDataAction.
             if (o == null || getClass() != o.getClass()) return false;
             Request request = (Request) o;
             return Objects.equals(requestsPerSecond, request.requestsPerSecond)
+                && Objects.equals(jobId, request.jobId)
+                && Objects.equals(expandedJobIds, request.expandedJobIds)
                 && Objects.equals(timeout, request.timeout);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(requestsPerSecond, timeout);
+            return Objects.hash(requestsPerSecond, timeout, jobId, expandedJobIds);
         }
 
         @Override
         public void writeTo(StreamOutput out) throws IOException {
             super.writeTo(out);
-            if (out.getVersion().onOrAfter(Version.V_7_8_0)) {
-                out.writeOptionalFloat(requestsPerSecond);
-                out.writeOptionalTimeValue(timeout);
-            }
-        }
-    }
-
-    static class RequestBuilder extends ActionRequestBuilder<Request, Response> {
-        RequestBuilder(ElasticsearchClient client, DeleteExpiredDataAction action) {
-            super(client, action, new Request());
+            out.writeOptionalFloat(requestsPerSecond);
+            out.writeOptionalTimeValue(timeout);
+            out.writeOptionalString(jobId);
+            // expandedJobIds are set on the node and not part of serialisation
         }
     }
 
@@ -131,7 +156,7 @@ public class DeleteExpiredDataAction extends ActionType<DeleteExpiredDataAction.
 
         private static final ParseField DELETED = new ParseField("deleted");
 
-        private boolean deleted;
+        private final boolean deleted;
 
         public Response(boolean deleted) {
             this.deleted = deleted;

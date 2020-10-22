@@ -28,18 +28,14 @@ import org.apache.lucene.search.FuzzyQuery;
 import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.util.BytesRef;
-import org.apache.lucene.util.automaton.CompiledAutomaton;
 import org.elasticsearch.common.ParsingException;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.compress.CompressedXContent;
-import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.Fuzziness;
-import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.index.mapper.MapperService;
 import org.elasticsearch.script.Script;
 import org.elasticsearch.script.ScriptContext;
-import org.elasticsearch.script.ScriptService;
 import org.elasticsearch.script.ScriptType;
 import org.elasticsearch.test.AbstractQueryTestCase;
 
@@ -403,28 +399,21 @@ public class IntervalQueryBuilderTests extends AbstractQueryTestCase<IntervalQue
     }
 
     public void testScriptFilter() throws IOException {
-
         IntervalFilterScript.Factory factory = () -> new IntervalFilterScript() {
             @Override
             public boolean execute(Interval interval) {
                 return interval.getStart() > 3;
             }
         };
-
-        ScriptService scriptService = new ScriptService(Settings.EMPTY, Collections.emptyMap(), Collections.emptyMap()){
+        QueryShardContext context = new QueryShardContext(createShardContext()) {
             @Override
             @SuppressWarnings("unchecked")
             public <FactoryType> FactoryType compile(Script script, ScriptContext<FactoryType> context) {
                 assertEquals(IntervalFilterScript.CONTEXT, context);
                 assertEquals(new Script("interval.start > 3"), script);
-                return (FactoryType) factory;
+                return (FactoryType)factory;
             }
         };
-
-        QueryShardContext baseContext = createShardContext();
-        QueryShardContext context = new QueryShardContext(baseContext.getShardId(), baseContext.getIndexSettings(),
-            BigArrays.NON_RECYCLING_INSTANCE, null, null, baseContext.getMapperService(),
-            null, scriptService, null, null, null, null, null, null, null, () -> true, null);
 
         String json = "{ \"intervals\" : { \"" + TEXT_FIELD_NAME + "\": { " +
             "\"match\" : { " +
@@ -436,11 +425,9 @@ public class IntervalQueryBuilderTests extends AbstractQueryTestCase<IntervalQue
         IntervalQueryBuilder builder = (IntervalQueryBuilder) parseQuery(json);
         Query q = builder.toQuery(context);
 
-
         IntervalQuery expected = new IntervalQuery(TEXT_FIELD_NAME,
             new IntervalsSourceProvider.ScriptFilterSource(Intervals.term("term1"), "interval.start > 3", null));
         assertEquals(expected, q);
-
     }
 
     public void testPrefixes() throws IOException {
@@ -549,8 +536,7 @@ public class IntervalQueryBuilderTests extends AbstractQueryTestCase<IntervalQue
 
     private static IntervalsSource buildFuzzySource(String term, String label, int prefixLength, boolean transpositions, int editDistance) {
         FuzzyQuery fq = new FuzzyQuery(new Term("field", term), editDistance, prefixLength, 128, transpositions);
-        CompiledAutomaton[] automata = fq.getAutomata();
-        return Intervals.multiterm(automata[automata.length - 1], label);
+        return Intervals.multiterm(fq.getAutomata(), label);
     }
 
     public void testFuzzy() throws IOException {

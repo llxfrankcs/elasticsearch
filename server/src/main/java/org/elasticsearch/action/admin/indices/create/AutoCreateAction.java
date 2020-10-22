@@ -30,8 +30,8 @@ import org.elasticsearch.cluster.ack.ClusterStateUpdateResponse;
 import org.elasticsearch.cluster.block.ClusterBlockException;
 import org.elasticsearch.cluster.block.ClusterBlockLevel;
 import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
-import org.elasticsearch.cluster.metadata.IndexTemplateV2;
-import org.elasticsearch.cluster.metadata.IndexTemplateV2.DataStreamTemplate;
+import org.elasticsearch.cluster.metadata.ComposableIndexTemplate;
+import org.elasticsearch.cluster.metadata.ComposableIndexTemplate.DataStreamTemplate;
 import org.elasticsearch.cluster.metadata.Metadata;
 import org.elasticsearch.cluster.metadata.MetadataCreateDataStreamService;
 import org.elasticsearch.cluster.metadata.MetadataCreateDataStreamService.CreateDataStreamClusterStateUpdateRequest;
@@ -40,16 +40,14 @@ import org.elasticsearch.cluster.metadata.MetadataIndexTemplateService;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.inject.Inject;
-import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.tasks.Task;
 import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportService;
 
-import java.io.IOException;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Api that auto creates an index that originate from requests that write into an index that doesn't yet exist.
+ * Api that auto creates an index or data stream that originate from requests that write into an index that doesn't yet exist.
  */
 public final class AutoCreateAction extends ActionType<CreateIndexResponse> {
 
@@ -71,20 +69,11 @@ public final class AutoCreateAction extends ActionType<CreateIndexResponse> {
                                ActionFilters actionFilters, IndexNameExpressionResolver indexNameExpressionResolver,
                                MetadataCreateIndexService createIndexService,
                                MetadataCreateDataStreamService metadataCreateDataStreamService) {
-            super(NAME, transportService, clusterService, threadPool, actionFilters, CreateIndexRequest::new, indexNameExpressionResolver);
+            super(NAME, transportService, clusterService, threadPool, actionFilters, CreateIndexRequest::new, indexNameExpressionResolver,
+                    CreateIndexResponse::new, ThreadPool.Names.SAME);
             this.activeShardsObserver = new ActiveShardsObserver(clusterService, threadPool);
             this.createIndexService = createIndexService;
             this.metadataCreateDataStreamService = metadataCreateDataStreamService;
-        }
-
-        @Override
-        protected String executor() {
-            return ThreadPool.Names.SAME;
-        }
-
-        @Override
-        protected CreateIndexResponse read(StreamInput in) throws IOException {
-            return new CreateIndexResponse(in);
         }
 
         @Override
@@ -126,7 +115,7 @@ public final class AutoCreateAction extends ActionType<CreateIndexResponse> {
                     DataStreamTemplate dataStreamTemplate = resolveAutoCreateDataStream(request, currentState.metadata());
                     if (dataStreamTemplate != null) {
                         CreateDataStreamClusterStateUpdateRequest createRequest = new CreateDataStreamClusterStateUpdateRequest(
-                            request.index(), dataStreamTemplate.getTimestampField(), request.masterNodeTimeout(), request.timeout());
+                            request.index(), request.masterNodeTimeout(), request.timeout());
                         ClusterState clusterState =  metadataCreateDataStreamService.createDataStream(createRequest, currentState);
                         indexNameRef.set(clusterState.metadata().dataStreams().get(request.index()).getIndices().get(0).getName());
                         return clusterState;
@@ -151,9 +140,9 @@ public final class AutoCreateAction extends ActionType<CreateIndexResponse> {
     static DataStreamTemplate resolveAutoCreateDataStream(CreateIndexRequest request, Metadata metadata) {
         String v2Template = MetadataIndexTemplateService.findV2Template(metadata, request.index(), false);
         if (v2Template != null) {
-            IndexTemplateV2 indexTemplateV2 = metadata.templatesV2().get(v2Template);
-            if (indexTemplateV2.getDataStreamTemplate() != null) {
-                return indexTemplateV2.getDataStreamTemplate();
+            ComposableIndexTemplate composableIndexTemplate = metadata.templatesV2().get(v2Template);
+            if (composableIndexTemplate.getDataStreamTemplate() != null) {
+                return composableIndexTemplate.getDataStreamTemplate();
             }
         }
 

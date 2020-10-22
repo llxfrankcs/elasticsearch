@@ -19,7 +19,6 @@
 
 package org.elasticsearch.common.unit;
 
-import org.apache.logging.log4j.LogManager;
 import org.elasticsearch.ElasticsearchParseException;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.io.stream.StreamInput;
@@ -42,10 +41,34 @@ public class ByteSizeValue implements Writeable, Comparable<ByteSizeValue>, ToXC
      * {@link ByteSizeValue} object constructed in, for example, settings in {@link org.elasticsearch.common.network.NetworkService}.
      */
     static class DeprecationLoggerHolder {
-        static DeprecationLogger deprecationLogger = new DeprecationLogger(LogManager.getLogger(ByteSizeValue.class));
+        static DeprecationLogger deprecationLogger = DeprecationLogger.getLogger(ByteSizeValue.class);
     }
 
     public static final ByteSizeValue ZERO = new ByteSizeValue(0, ByteSizeUnit.BYTES);
+
+    public static ByteSizeValue ofBytes(long size) {
+        return new ByteSizeValue(size);
+    }
+
+    public static ByteSizeValue ofKb(long size) {
+        return new ByteSizeValue(size, ByteSizeUnit.KB);
+    }
+
+    public static ByteSizeValue ofMb(long size) {
+        return new ByteSizeValue(size, ByteSizeUnit.MB);
+    }
+
+    public static ByteSizeValue ofGb(long size) {
+        return new ByteSizeValue(size, ByteSizeUnit.GB);
+    }
+
+    public static ByteSizeValue ofTb(long size) {
+        return new ByteSizeValue(size, ByteSizeUnit.TB);
+    }
+
+    public static ByteSizeValue ofPb(long size) {
+        return new ByteSizeValue(size, ByteSizeUnit.PB);
+    }
 
     private final long size;
     private final ByteSizeUnit unit;
@@ -235,10 +258,10 @@ public class ByteSizeValue implements Writeable, Comparable<ByteSizeValue>, ToXC
             } catch (final NumberFormatException e) {
                 try {
                     final double doubleValue = Double.parseDouble(s);
-                    DeprecationLoggerHolder.deprecationLogger.deprecatedAndMaybeLog(
-                            "fractional_byte_values",
-                            "Fractional bytes values are deprecated. Use non-fractional bytes values instead: [{}] found for setting [{}]",
-                            initialInput, settingName);
+                    DeprecationLoggerHolder.deprecationLogger
+                        .deprecate("fractional_byte_values",
+                         "Fractional bytes values are deprecated. Use non-fractional bytes values instead: [{}] found for setting [{}]",
+                         initialInput, settingName);
                     return new ByteSizeValue((long) (doubleValue * unit.toBytes(1)));
                 } catch (final NumberFormatException ignored) {
                     throw new ElasticsearchParseException("failed to parse [{}]", e, initialInput);

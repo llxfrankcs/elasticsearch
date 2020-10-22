@@ -19,44 +19,28 @@
 
 package org.elasticsearch.painless.ir;
 
-import org.elasticsearch.painless.ClassWriter;
 import org.elasticsearch.painless.Location;
-import org.elasticsearch.painless.MethodWriter;
-import org.elasticsearch.painless.symbol.ScopeTable;
+import org.elasticsearch.painless.phase.IRTreeVisitor;
 
 public abstract class IRNode {
 
-    /* begin node data */
+    /* ---- begin node data ---- */
 
-    protected Location location;
-
-    public void setLocation(Location location) {
-        this.location = location;
-    }
+    private final Location location;
 
     public Location getLocation() {
         return location;
     }
 
-    /* end node data */
+    /* ---- end node data, begin visitor ---- */
 
-    protected void write(ClassWriter classWriter, MethodWriter methodWriter, ScopeTable scopeTable) {
-        throw new UnsupportedOperationException();
+    public abstract <Scope> void visit(IRTreeVisitor<Scope> irTreeVisitor, Scope scope);
+    public abstract <Scope> void visitChildren(IRTreeVisitor<Scope> irTreeVisitor, Scope scope);
+
+    /* ---- end visitor ---- */
+
+    public IRNode(Location location) {
+        this.location = location;
     }
 
-    protected int accessElementCount() {
-        throw new UnsupportedOperationException();
-    }
-
-    protected void setup(ClassWriter classWriter, MethodWriter methodWriter, ScopeTable scopeTable) {
-        throw new UnsupportedOperationException();
-    }
-
-    protected void load(ClassWriter classWriter, MethodWriter methodWriter, ScopeTable scopeTable) {
-        throw new UnsupportedOperationException();
-    }
-
-    protected void store(ClassWriter classWriter, MethodWriter methodWriter, ScopeTable scopeTable) {
-        throw new UnsupportedOperationException();
-    }
 }

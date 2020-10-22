@@ -35,9 +35,10 @@ import org.elasticsearch.cluster.routing.TestShardRouting;
 import org.elasticsearch.cluster.service.ClusterService;
 import org.elasticsearch.common.UUIDs;
 import org.elasticsearch.common.bytes.BytesReference;
-import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.lucene.uid.Versions;
+import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.common.util.MockBigArrays;
 import org.elasticsearch.common.xcontent.XContentHelper;
 import org.elasticsearch.core.internal.io.IOUtils;
 import org.elasticsearch.env.Environment;
@@ -58,6 +59,7 @@ import org.elasticsearch.index.shard.IndexShardState;
 import org.elasticsearch.index.shard.IndexShardTestCase;
 import org.elasticsearch.index.shard.ShardId;
 import org.elasticsearch.index.snapshots.IndexShardSnapshotStatus;
+import org.elasticsearch.indices.recovery.RecoverySettings;
 import org.elasticsearch.indices.recovery.RecoveryState;
 import org.elasticsearch.repositories.IndexId;
 import org.elasticsearch.repositories.Repository;
@@ -75,6 +77,7 @@ import java.util.Collections;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 public class SourceOnlySnapshotShardTests extends IndexShardTestCase {
 
@@ -216,12 +219,18 @@ public class SourceOnlySnapshotShardTests extends IndexShardTestCase {
                 repository.snapshotShard(shard.store(), shard.mapperService(), snapshotId, indexId, snapshotRef.getIndexCommit(),
                     null, indexShardSnapshotStatus, Version.CURRENT, Collections.emptyMap(), future);
                 future.actionGet();
-                final PlainActionFuture<Tuple<RepositoryData, SnapshotInfo>> finFuture = PlainActionFuture.newFuture();
-                repository.finalizeSnapshot(snapshotId,
-                    ShardGenerations.builder().put(indexId, 0, indexShardSnapshotStatus.generation()).build(),
-                    indexShardSnapshotStatus.asCopy().getStartTime(), null, 1, Collections.emptyList(),
-                    ESBlobStoreRepositoryIntegTestCase.getRepositoryData(repository).getGenId(), true,
-                    Metadata.builder().put(shard.indexSettings().getIndexMetadata(), false).build(), Collections.emptyMap(),
+                final PlainActionFuture<RepositoryData> finFuture = PlainActionFuture.newFuture();
+                final ShardGenerations shardGenerations =
+                    ShardGenerations.builder().put(indexId, 0, indexShardSnapshotStatus.generation()).build();
+                repository.finalizeSnapshot(
+                    shardGenerations,
+                    ESBlobStoreRepositoryIntegTestCase.getRepositoryData(repository).getGenId(),
+                    Metadata.builder().put(shard.indexSettings().getIndexMetadata(), false).build(),
+                    new SnapshotInfo(snapshotId,
+                        shardGenerations.indices().stream()
+                        .map(IndexId::getName).collect(Collectors.toList()), Collections.emptyList(), 0L, null, 1L,
+                        shardGenerations.totalShards(),
+                        Collections.emptyList(), true, Collections.emptyMap()),
                     Version.CURRENT, Function.identity(), finFuture);
                 finFuture.actionGet();
             });
@@ -234,7 +243,8 @@ public class SourceOnlySnapshotShardTests extends IndexShardTestCase {
             ShardRoutingState.INITIALIZING,
             new RecoverySource.SnapshotRecoverySource(
                 UUIDs.randomBase64UUID(), new Snapshot("src_only", snapshotId), Version.CURRENT, indexId));
-        IndexMetadata metadata = runAsSnapshot(threadPool, () -> repository.getSnapshotIndexMetadata(snapshotId, indexId));
+        IndexMetadata metadata = runAsSnapshot(threadPool, () ->
+            repository.getSnapshotIndexMetaData(PlainActionFuture.get(repository::getRepositoryData), snapshotId, indexId));
         IndexShard restoredShard = newShard(
             shardRouting, metadata, null, SourceOnlySnapshotRepository.getEngineFactory(), () -> {}, RetentionLeaseSyncer.EMPTY);
         DiscoveryNode discoveryNode = new DiscoveryNode("node_g", buildNewFakeTransportAddress(), Version.CURRENT);
@@ -318,7 +328,7 @@ public class SourceOnlySnapshotShardTests extends IndexShardTestCase {
                     if (liveDocs == null || liveDocs.get(i)) {
                         rootFieldsVisitor.reset();
                         leafReader.document(i, rootFieldsVisitor);
-                        rootFieldsVisitor.postProcess(targetShard.mapperService());
+                        rootFieldsVisitor.postProcess(targetShard.mapperService()::fieldType);
                         String id = rootFieldsVisitor.id();
                         BytesReference source = rootFieldsVisitor.source();
                         assert source != null : "_source is null but should have been filtered out at snapshot time";
@@ -358,7 +368,9 @@ public class SourceOnlySnapshotShardTests extends IndexShardTestCase {
         Settings settings = Settings.builder().put("location", randomAlphaOfLength(10)).build();
         RepositoryMetadata repositoryMetadata = new RepositoryMetadata(randomAlphaOfLength(10), FsRepository.TYPE, settings);
         final ClusterService clusterService = BlobStoreTestUtil.mockClusterService(repositoryMetadata);
-        final Repository repository = new FsRepository(repositoryMetadata, createEnvironment(), xContentRegistry(), clusterService);
+        final Repository repository = new FsRepository(repositoryMetadata, createEnvironment(), xContentRegistry(), clusterService,
+            MockBigArrays.NON_RECYCLING_INSTANCE,
+            new RecoverySettings(settings, new ClusterSettings(settings, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS)));
         clusterService.addStateApplier(e -> repository.updateState(e.state()));
         // Apply state once to initialize repo properly like RepositoriesService would
         repository.updateState(clusterService.state());
